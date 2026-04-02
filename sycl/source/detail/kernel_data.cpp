@@ -27,7 +27,7 @@ namespace detail {
 // processed argument, hence worst-case estimate is 12+1=13.
 // TODO: the constant can be removed if the size of MArgs will be calculated at
 // compile time.
-inline constexpr size_t MaxNumAdditionalArgs = 13;
+inline constexpr size_t MaxNumAdditionalArgs = 15;
 
 constexpr static int AccessTargetMask = 0x7ff;
 
@@ -63,6 +63,15 @@ static void addArgsForGlobalAccessor(detail::Requirement *AccImpl, size_t Index,
     ++IndexShift;
     Args.emplace_back(kernel_param_kind_t::kind_std_layout,
                       &AccImpl->MOffset[0], SizeAccField, Index + IndexShift);
+    ++IndexShift;
+    Args.emplace_back(kernel_param_kind_t::kind_std_layout,
+                      &AccImpl->MAccData.MLogicalRange[0], SizeAccField,
+                      Index + IndexShift);
+    ++IndexShift;
+    Args.emplace_back(kernel_param_kind_t::kind_std_layout,
+                      &AccImpl->MAccData.MLogic,
+                      sizeof(detail::buffer_access_logic_impl),
+                      Index + IndexShift);
   }
 }
 

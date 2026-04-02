@@ -73,6 +73,10 @@ void *AccessorBaseHost::getPtr() noexcept { return impl->MData; }
 
 detail::AccHostDataT &AccessorBaseHost::getAccData() { return impl->MAccData; }
 
+const detail::AccHostDataT &AccessorBaseHost::getAccData() const {
+  return impl->MAccData;
+}
+
 const property_list &AccessorBaseHost::getPropList() const {
   return impl->MPropertyList;
 }

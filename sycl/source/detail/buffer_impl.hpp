@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <sycl/detail/buffer_access_logic_impl.hpp>
 #include <detail/sycl_mem_obj_t.hpp>
 #include <sycl/access/access.hpp>
 #include <sycl/context.hpp>
@@ -18,6 +19,7 @@
 #include <sycl/detail/ur.hpp>
 #include <sycl/property_list.hpp>
 
+#include <optional>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -40,6 +42,8 @@ namespace detail {
 class buffer_impl final : public SYCLMemObjT {
   using BaseT = SYCLMemObjT;
   using typename BaseT::MemObjType;
+private:
+  std::optional<buffer_access_logic_impl> MAccessLogic;
 
 public:
   buffer_impl(size_t SizeInBytes, size_t, const property_list &Props,
@@ -148,6 +152,18 @@ public:
   }
 
   void resize(size_t size) { BaseT::MSizeInBytes = size; }
+
+  void setAccessLogic(const buffer_access_logic_impl &Logic) {
+    MAccessLogic = Logic;
+  }
+
+  bool hasAccessLogic() const noexcept {
+    return MAccessLogic.has_value();
+  }
+
+  const buffer_access_logic_impl *getAccessLogic() const noexcept {
+    return MAccessLogic ? &*MAccessLogic : nullptr;
+  }
 
   void addInteropObject(std::vector<ur_native_handle_t> &Handles) const;
 

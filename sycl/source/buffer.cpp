@@ -105,6 +105,20 @@ const property_list &buffer_plain::getPropList() const {
   return impl->getPropList();
 }
 
+void buffer_plain::setAccessLogicImpl(
+    const detail::buffer_access_logic_impl &Logic) {
+  impl->setAccessLogic(Logic);
+}
+
+bool buffer_plain::hasAccessLogicImpl() const noexcept {
+  return impl->hasAccessLogic();
+}
+
+const detail::buffer_access_logic_impl *
+buffer_plain::getAccessLogicImpl() const noexcept {
+  return impl->getAccessLogic();
+}
+
 } // namespace detail
 } // namespace _V1
 } // namespace sycl

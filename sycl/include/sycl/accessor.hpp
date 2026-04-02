@@ -250,6 +250,10 @@ struct AccHostDataT {
   sycl::id<3> MOffset;
   sycl::range<3> MAccessRange;
   sycl::range<3> MMemoryRange;
+
+  sycl::range<3> MLogicalRange;
+  detail::buffer_access_logic_impl MLogic;
+
   void *MData = nullptr;
   void *Reserved = nullptr;
 };
@@ -498,6 +502,8 @@ public:
   id<Dims> Offset;
   range<Dims> AccessRange;
   range<Dims> MemRange;
+  range<Dims> LogicalRange;
+  detail::buffer_access_logic_impl Logic;
 
   bool operator==(const AccessorImplDevice &Rhs) const {
     return (Offset == Rhs.Offset && AccessRange == Rhs.AccessRange &&
@@ -546,6 +552,7 @@ public:
   bool isMemoryObjectUsedByGraph() const;
 
   detail::AccHostDataT &getAccData();
+  const detail::AccHostDataT &getAccData() const;
 
   const property_list &getPropList() const;
 
@@ -658,11 +665,56 @@ protected:
   using ConstRefType = const DataT &;
   using PtrType = detail::const_if_const_AS<AS, DataT> *;
 
+  bool has_access_logic() const noexcept {
+  #ifdef __SYCL_DEVICE_ONLY__
+    return impl.Logic.Enabled;
+  #else
+    if constexpr (IsHostBuf)
+      return MAccData && MAccData->MLogic.Enabled;
+    else
+      return AccessorBaseHost::getAccData().MLogic.Enabled;
+  #endif
+  }
+
+  size_t map_index(size_t Dim, size_t Logical) const noexcept {
+  #ifdef __SYCL_DEVICE_ONLY__
+    return impl.Logic.Enabled ? impl.Logic.map(Dim, Logical) : Logical;
+  #else
+    if constexpr (IsHostBuf)
+      return (MAccData && MAccData->MLogic.Enabled)
+                ? MAccData->MLogic.map(Dim, Logical)
+                : Logical;
+    else
+      return AccessorBaseHost::getAccData().MLogic.Enabled ? AccessorBaseHost::getAccData().MLogic.map(Dim, Logical) : Logical;
+  #endif
+  }
+
+  range<AdjustedDim> get_logical_range() const {
+  #ifdef __SYCL_DEVICE_ONLY__
+    return impl.LogicalRange;
+  #else
+    if constexpr (IsHostBuf) {
+      if (!MAccData)
+        return getAccessRange();
+      if constexpr (AdjustedDim == 1)
+        return range<1>{MAccData->MLogicalRange[0]};
+      else if constexpr (AdjustedDim == 2)
+        return range<2>{MAccData->MLogicalRange[0], MAccData->MLogicalRange[1]};
+      else
+        return range<3>{MAccData->MLogicalRange[0], MAccData->MLogicalRange[1],
+                        MAccData->MLogicalRange[2]};
+    } else {
+      return AccessorBaseHost::getAccData().MLogicalRange;
+    }
+  #endif
+  }
+
   template <int Dims = Dimensions> size_t getLinearIndex(id<Dims> Id) const {
 
     size_t Result = 0;
     detail::loop<Dims>([&, this](size_t I) {
-      Result = Result * getMemoryRange()[I] + Id[I];
+      size_t Phys = map_index(I, Id[I]);
+      Result = Result * getMemoryRange()[I] + Phys;
       // We've already adjusted for the accessor's offset in the __init, so
       // don't include it here in case of device.
 #ifndef __SYCL_DEVICE_ONLY__
@@ -724,7 +776,10 @@ protected:
   };
 
   void __init(ConcreteASPtrType Ptr, range<AdjustedDim> AccessRange,
-              range<AdjustedDim> MemRange, id<AdjustedDim> Offset) {
+              range<AdjustedDim> MemRange, id<AdjustedDim> Offset,
+              range<AdjustedDim> LogicalRange = range<AdjustedDim>{},
+              detail::buffer_access_logic_impl Logic =
+                detail::buffer_access_logic_impl{}) {
     MData = Ptr;
     detail::loop<AdjustedDim>([&, this](size_t I) {
       if constexpr (!(PropertyListT::template has_property<
@@ -733,8 +788,9 @@ protected:
       }
       getAccessRange()[I] = AccessRange[I];
       getMemoryRange()[I] = MemRange[I];
+      impl.LogicalRange[I] = LogicalRange[I];
     });
-
+    impl.Logic = Logic;
     // Adjust for offsets as that part is invariant for all invocations of
     // operator[]. Will have to re-adjust in get_pointer.
     MData += getTotalOffset();
@@ -791,6 +847,17 @@ public:
   void *getPtr() const { return AccessorBaseHost::getPtr(); }
 
   void initHostAcc() { MAccData = &getAccData(); }
+
+  template <typename BufferT>
+  void init_logic_from_buffer(BufferT &BufferRef) {
+    if (!BufferRef.has_access_logic())
+      return;
+
+    auto *Logic = BufferRef.get_access_logic();
+    auto &AccData = getAccData();
+    AccData.MLogic = *Logic;
+    AccData.MLogicalRange = Logic->logical_range_from_physical(AccData.MMemoryRange);
+  }
 
   // The function references helper methods required by GDB pretty-printers
   void GDBMethodsAnchor() {
@@ -958,6 +1025,7 @@ public:
     if (!AccessorBaseHost::isPlaceholder())
       addHostAccessorAndWait(AccessorBaseHost::impl.get());
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -999,6 +1067,7 @@ public:
     if (!AccessorBaseHost::isPlaceholder())
       addHostAccessorAndWait(AccessorBaseHost::impl.get());
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1035,6 +1104,7 @@ public:
     preScreenAccessor(PropertyList);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1073,6 +1143,7 @@ public:
     preScreenAccessor(PropertyList);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1108,6 +1179,7 @@ public:
     if (!AccessorBaseHost::isPlaceholder())
       addHostAccessorAndWait(AccessorBaseHost::impl.get());
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1145,6 +1217,7 @@ public:
     if (!AccessorBaseHost::isPlaceholder())
       addHostAccessorAndWait(AccessorBaseHost::impl.get());
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1204,6 +1277,7 @@ public:
     preScreenAccessor(PropertyList);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1239,6 +1313,7 @@ public:
     throwIfUsedByGraph();
     preScreenAccessor(PropertyList);
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
@@ -1412,6 +1487,7 @@ public:
                             "exceed the bounds of the buffer");
 
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1455,6 +1531,7 @@ public:
                             "exceed the bounds of the buffer");
 
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1521,6 +1598,7 @@ public:
                             "exceed the bounds of the buffer");
 
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
@@ -1564,6 +1642,7 @@ public:
                             "exceed the bounds of the buffer");
 
     initHostAcc();
+    init_logic_from_buffer(BufferRef);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),

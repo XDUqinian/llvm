@@ -8,6 +8,8 @@
 
 #pragma once
 
+#include <sycl/ext/oneapi/experimental/buffer_access_logic.hpp>
+#include <sycl/detail/buffer_access_logic_impl.hpp>
 #include <sycl/access/access.hpp>
 #include <sycl/backend_types.hpp>
 #include <sycl/detail/array.hpp>
@@ -155,6 +157,12 @@ protected:
   size_t getSize() const;
 
   void handleRelease() const;
+
+  void setAccessLogicImpl(const detail::buffer_access_logic_impl &Logic);
+
+  bool hasAccessLogicImpl() const noexcept;
+
+  const detail::buffer_access_logic_impl *getAccessLogicImpl() const noexcept;
 
   std::shared_ptr<detail::buffer_impl> impl;
 
@@ -499,6 +507,23 @@ public:
   /* -- property interface members -- */
 
   range<dimensions> get_range() const { return Range; }
+
+  void set_access_logic(
+      const ext::oneapi::experimental::buffer_access_logic<dimensions> &Logic) {
+    if (!Logic.valid()) {
+      throw sycl::exception(make_error_code(errc::invalid),
+                            "invalid buffer_access_logic");
+    }
+    buffer_plain::setAccessLogicImpl(detail::make_buffer_access_logic_impl(Logic));
+  }
+
+  bool has_access_logic() const noexcept {
+    return buffer_plain::hasAccessLogicImpl();
+  }
+
+  const detail::buffer_access_logic_impl *get_access_logic() const noexcept {
+    return buffer_plain::getAccessLogicImpl();
+  }
 
   __SYCL2020_DEPRECATED("get_count() is deprecated, please use size() instead")
   size_t get_count() const { return size(); }
