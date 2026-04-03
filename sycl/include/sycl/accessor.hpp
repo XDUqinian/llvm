@@ -614,6 +614,72 @@ class __SYCL_EBO __SYCL_SPECIAL_CLASS __SYCL_TYPE(accessor) accessor :
                  PropertyListT>> {
   friend sycl::detail::ImplUtils;
 
+public:
+  class logical_unit_view {
+    accessor Parent;
+    id<Dimensions> BaseLogical;
+    range<Dimensions> Extent;
+
+  public:
+    using value_type = typename accessor::value_type;
+    using reference = typename accessor::reference;
+    using const_reference = typename accessor::const_reference;
+    using size_type = typename accessor::size_type;
+
+    logical_unit_view(accessor ParentAcc, id<Dimensions> Base,
+                      range<Dimensions> Range)
+        : Parent(ParentAcc), BaseLogical(Base), Extent(Range) {}
+
+    range<Dimensions> get_range() const { return Extent; }
+    id<Dimensions> get_logical_offset() const { return BaseLogical; }
+
+    decltype(auto) operator[](id<Dimensions> Local) const {
+      id<Dimensions> Global{};
+      detail::loop<Dimensions>([&](size_t I) {
+        Global[I] = BaseLogical[I] + Local[I];
+      });
+      return Parent[Global];
+    }
+
+    template <int Dims = Dimensions, typename = std::enable_if_t<Dims == 1>>
+    decltype(auto) operator[](size_t Index) const {
+      return (*this)[id<1>{Index}];
+    }
+
+    template <int Dims = Dimensions, typename = std::enable_if_t<(Dims > 1)>>
+    auto operator[](size_t Index) const {
+      return typename AccessorCommonT::template AccessorSubscript<
+          Dims - 1, logical_unit_view>(*this, Index);
+    }
+  };
+
+  template <int Dims = Dimensions, typename = std::enable_if_t<(Dims > 0)>>
+  size_t get_unit_count() const {
+    return get_unit_grid().size();
+  }
+
+  template <int Dims = Dimensions, typename = std::enable_if_t<(Dims > 0)>>
+  logical_unit_view get_unit_view(size_t UnitId) const {
+    const auto Grid = get_unit_grid();
+
+#ifndef __SYCL_DEVICE_ONLY__
+    if (UnitId >= Grid.size()) {
+      throw sycl::exception(make_error_code(errc::invalid),
+                            "accessor::get_unit_view(): unit id out of range");
+    }
+#endif
+
+    const auto Extent = get_unit_extent();
+    const auto Coord = linear_unit_id_to_coord(UnitId, Grid);
+
+    id<Dimensions> Base{};
+    detail::loop<Dimensions>([&](size_t I) {
+      Base[I] = Coord[I] * Extent[I];
+    });
+
+    return logical_unit_view(*this, Base, Extent);
+  }
+
 protected:
   static_assert((AccessTarget == access::target::global_buffer ||
                  AccessTarget == access::target::constant_buffer ||
@@ -665,6 +731,79 @@ protected:
   using ConstRefType = const DataT &;
   using PtrType = detail::const_if_const_AS<AS, DataT> *;
 
+private:
+  static constexpr range<AdjustedDim> make_range_from_3d(const range<3> &R) {
+    if constexpr (AdjustedDim == 1)
+      return range<1>{R[0]};
+    else if constexpr (AdjustedDim == 2)
+      return range<2>{R[0], R[1]};
+    else
+      return range<3>{R[0], R[1], R[2]};
+  }
+
+  static constexpr id<AdjustedDim> make_id_from_3d(const id<3> &I) {
+    if constexpr (AdjustedDim == 1)
+      return id<1>{I[0]};
+    else if constexpr (AdjustedDim == 2)
+      return id<2>{I[0], I[1]};
+    else
+      return id<3>{I[0], I[1], I[2]};
+  }
+
+  static constexpr range<AdjustedDim> make_one_unit_grid() {
+    if constexpr (AdjustedDim == 1)
+      return range<1>{1};
+    else if constexpr (AdjustedDim == 2)
+      return range<2>{1, 1};
+    else
+      return range<3>{1, 1, 1};
+  }
+
+  detail::buffer_access_logic_impl get_access_logic() const noexcept {
+  #ifdef __SYCL_DEVICE_ONLY__
+      return impl.Logic;
+  #else
+      if constexpr (IsHostBuf)
+        return MAccData ? MAccData->MLogic : detail::buffer_access_logic_impl{};
+      else
+        return AccessorBaseHost::getAccData().MLogic;
+  #endif
+  }
+
+  range<AdjustedDim> get_unit_grid() const {
+    if (!has_access_logic())
+      return make_one_unit_grid();
+
+    const auto Logic = get_access_logic();
+    const auto Phys3 = detail::to_range3(getAccessRange());
+    const auto Counts3 = Logic.unit_count_from_physical(Phys3);
+    return make_range_from_3d(Counts3);
+  }
+
+  range<AdjustedDim> get_unit_extent() const {
+    if (!has_access_logic())
+      return get_logical_range();
+
+    const auto Logic = get_access_logic();
+    if constexpr (AdjustedDim == 1)
+      return range<1>{Logic.ChunkLen[0]};
+    else if constexpr (AdjustedDim == 2)
+      return range<2>{Logic.ChunkLen[0], Logic.ChunkLen[1]};
+    else
+      return range<3>{Logic.ChunkLen[0], Logic.ChunkLen[1], Logic.ChunkLen[2]};
+  }
+
+  id<AdjustedDim> linear_unit_id_to_coord(size_t UnitId, const range<AdjustedDim> &Grid) const noexcept {
+    id<AdjustedDim> Coord{};
+    for (int I = AdjustedDim - 1; I >= 0; --I) {
+      const size_t Count = Grid[I];
+      Coord[I] = Count ? (UnitId % Count) : 0;
+      UnitId = Count ? (UnitId / Count) : 0;
+    }
+    return Coord;
+  }
+
+protected:
   bool has_access_logic() const noexcept {
   #ifdef __SYCL_DEVICE_ONLY__
     return impl.Logic.Enabled;
@@ -704,7 +843,13 @@ protected:
         return range<3>{MAccData->MLogicalRange[0], MAccData->MLogicalRange[1],
                         MAccData->MLogicalRange[2]};
     } else {
-      return AccessorBaseHost::getAccData().MLogicalRange;
+      if constexpr (AdjustedDim == 1)
+        return range<1>{AccessorBaseHost::getAccData().MLogicalRange[0]};
+      else if constexpr (AdjustedDim == 2)
+        return range<2>{AccessorBaseHost::getAccData().MLogicalRange[0], AccessorBaseHost::getAccData().MLogicalRange[1]};
+      else
+        return range<3>{AccessorBaseHost::getAccData().MLogicalRange[0], AccessorBaseHost::getAccData().MLogicalRange[1],
+                        AccessorBaseHost::getAccData().MLogicalRange[2]};
     }
   #endif
   }
