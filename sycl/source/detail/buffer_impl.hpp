@@ -9,6 +9,7 @@
 #pragma once
 
 #include <sycl/detail/buffer_access_logic_impl.hpp>
+#include <sycl/detail/backend_layout_plan.hpp>
 #include <detail/sycl_mem_obj_t.hpp>
 #include <sycl/access/access.hpp>
 #include <sycl/context.hpp>
@@ -24,6 +25,8 @@
 #include <functional>
 #include <memory>
 #include <type_traits>
+#include <mutex>
+#include <unordered_map>
 
 namespace sycl {
 inline namespace _V1 {
@@ -44,6 +47,26 @@ class buffer_impl final : public SYCLMemObjT {
   using typename BaseT::MemObjType;
 private:
   std::optional<buffer_access_logic_impl> MAccessLogic;
+
+  range<3> MPhysicalRange{1, 1, 1};
+
+  struct cached_layout_entry {
+    std::shared_ptr<const backend_layout_plan> HostPlan;
+    std::unordered_map<context_impl *,
+                       std::shared_ptr<device_layout_mapping>>
+        PerContextMappings;
+  };
+
+  mutable std::mutex MLayoutCacheMutex;
+  mutable std::unordered_map<backend_layout_cache_key,
+                             cached_layout_entry,
+                             backend_layout_cache_key_hash>
+      MLayoutCache;
+
+  void invalidateBackendLayoutCache() const {
+    std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);
+    MLayoutCache.clear();
+  }
 
 public:
   buffer_impl(size_t SizeInBytes, size_t, const property_list &Props,
@@ -151,11 +174,25 @@ public:
     destructorNotification(this);
   }
 
-  void resize(size_t size) { BaseT::MSizeInBytes = size; }
+  void resize(size_t size) {
+    BaseT::MSizeInBytes = size;
+    invalidateBackendLayoutCache();
+  }
 
   void setAccessLogic(const buffer_access_logic_impl &Logic) {
     MAccessLogic = Logic;
+    invalidateBackendLayoutCache();
   }
+
+  void setPhysicalRange(range<3> R) {
+    const size_t R0 = R[0] == 0 ? 1 : R[0];
+    const size_t R1 = R[1] == 0 ? 1 : R[1];
+    const size_t R2 = R[2] == 0 ? 1 : R[2];
+    MPhysicalRange = range<3>{R0, R1, R2};
+    invalidateBackendLayoutCache();
+  }
+
+  range<3> getPhysicalRange() const noexcept { return MPhysicalRange; }
 
   bool hasAccessLogic() const noexcept {
     return MAccessLogic.has_value();
@@ -164,6 +201,22 @@ public:
   const buffer_access_logic_impl *getAccessLogic() const noexcept {
     return MAccessLogic ? &*MAccessLogic : nullptr;
   }
+
+  size_t getAccessLogicElemSize() const noexcept override {
+    return BaseT::get_allocator_internal()->getValueSize();
+  }
+
+  bool hasBackendLayoutPolicy() const noexcept override {
+    return hasAccessLogic();
+  }
+
+  const backend_layout_plan *
+  getOrCreateBackendLayoutPlan(backend_kind BK,
+                               backend_layout_kind LK) const override;
+
+  const device_layout_mapping *
+  getOrCreateDeviceLayoutMapping(context_impl *Ctx, backend_kind BK,
+                                 backend_layout_kind LK) const override;
 
   void addInteropObject(std::vector<ur_native_handle_t> &Handles) const;
 

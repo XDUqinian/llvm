@@ -18,6 +18,103 @@
 namespace sycl {
 inline namespace _V1 {
 namespace detail {
+
+static backend_layout_plan
+build_layout_plan_from_impl(const buffer_access_logic_impl &LogicImpl,
+                            range<3> PhysicalRange,
+                            backend_kind BK,
+                            backend_layout_kind LK) {
+  (void)BK;
+  (void)LK;
+  return make_cpu_unit_first_touch_plan(LogicImpl, PhysicalRange);
+}
+
+const backend_layout_plan *
+buffer_impl::getOrCreateBackendLayoutPlan(backend_kind BK,
+                                          backend_layout_kind LK) const {
+  if (!hasAccessLogic())
+    return nullptr;
+
+  if (MPhysicalRange[0] == 0 || MPhysicalRange[1] == 0 || MPhysicalRange[2] == 0) {
+    throw std::runtime_error(
+        "buffer_impl::getOrCreateBackendLayoutPlan: invalid physical range");
+  }
+
+  const backend_layout_cache_key Key{BK, LK};
+
+  {
+    std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);
+    auto It = MLayoutCache.find(Key);
+    if (It != MLayoutCache.end() && It->second.HostPlan)
+      return It->second.HostPlan.get();
+  }
+
+  auto Plan = std::make_shared<backend_layout_plan>(
+      build_layout_plan_from_impl(*getAccessLogic(), MPhysicalRange, BK, LK));
+
+  std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);
+  auto &Entry = MLayoutCache[Key];
+  if (!Entry.HostPlan)
+    Entry.HostPlan = std::move(Plan);
+  return Entry.HostPlan.get();
+}
+
+const device_layout_mapping *
+buffer_impl::getOrCreateDeviceLayoutMapping(context_impl *Ctx,
+                                            backend_kind BK,
+                                            backend_layout_kind LK) const {
+  const backend_layout_plan *Plan = getOrCreateBackendLayoutPlan(BK, LK);
+  if (!Plan)
+    return nullptr;
+
+  const backend_layout_cache_key Key{BK, LK};
+
+  {
+    std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);
+    auto It = MLayoutCache.find(Key);
+    if (It != MLayoutCache.end()) {
+      auto ItMap = It->second.PerContextMappings.find(Ctx);
+      if (ItMap != It->second.PerContextMappings.end())
+        return ItMap->second.get();
+    }
+  }
+
+  auto Mapping = std::make_shared<device_layout_mapping>();
+  Mapping->HostCanonicalToPacked =
+      std::make_shared<std::vector<size_t>>(Plan->CanonicalToPacked);
+
+  Mapping->Desc.Enabled = true;
+  Mapping->Desc.Backend = BK;
+  Mapping->Desc.Layout = LK;
+  Mapping->Desc.PhysicalRange = Plan->PhysicalRange;
+  Mapping->Desc.TableSize = Mapping->HostCanonicalToPacked->size();
+
+  if (BK == backend_kind::cpu) {
+    Mapping->DeviceCanonicalToPacked =
+        Mapping->HostCanonicalToPacked->data();
+    Mapping->Desc.CanonicalToPacked = Mapping->DeviceCanonicalToPacked;
+  } else {
+    // GPU 先占位：后续在这里把表上传到 device/USM allocation
+    Mapping->Desc.Enabled = false;
+  }
+
+  std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);
+  auto &Entry = MLayoutCache[Key];
+  auto &Slot = Entry.PerContextMappings[Ctx];
+  if (!Slot)
+    Slot = std::move(Mapping);
+  return Slot.get();
+}
+
+const device_layout_mapping *
+get_or_create_device_layout_mapping_for_accessor(
+    const std::shared_ptr<buffer_impl> &Impl, context_impl *Ctx,
+    backend_kind BK, backend_layout_kind LK) {
+  if (!Impl || !Impl->hasBackendLayoutPolicy())
+    return nullptr;
+  return Impl->getOrCreateDeviceLayoutMapping(Ctx, BK, LK);
+}
+
 void *buffer_impl::allocateMem(context_impl *Context, bool InitFromUserData,
                                void *HostPtr,
                                ur_event_handle_t &OutEventToWait) {
@@ -35,6 +132,11 @@ void buffer_impl::constructorNotification(const detail::code_location &CodeLoc,
                                           void *UserObj, const void *HostObj,
                                           const void *Type, uint32_t Dim,
                                           uint32_t ElemSize, size_t Range[3]) {
+  
+  const size_t R0 = Range[0];
+  const size_t R1 = Dim >= 2 ? Range[1] : 1;
+  const size_t R2 = Dim >= 3 ? Range[2] : 1;
+  setPhysicalRange(range<3>{Range[0], Range[1], Range[2]});
   XPTIRegistry::bufferConstructorNotification(UserObj, CodeLoc, HostObj, Type,
                                               Dim, ElemSize, Range);
 }

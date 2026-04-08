@@ -375,9 +375,10 @@ Scheduler::GraphBuilder::insertMemoryMove(MemObjRecord *Record,
       assert(false && "Inappropriate alloca command.");
   }
 
+  const bool HasAccessLogic = Req->MSYCLMemObj && Req->MSYCLMemObj->hasAccessLogic();
   Command *NewCmd = nullptr;
 
-  if (AllocaCmdSrc->MLinkedAllocaCmd == AllocaCmdDst) {
+  if (!HasAccessLogic && AllocaCmdSrc->MLinkedAllocaCmd == AllocaCmdDst) {
     // Map write only as read-write
     access::mode MapMode = Req->MAccessMode;
     if (MapMode == access::mode::write)
@@ -522,12 +523,13 @@ Scheduler::GraphBuilder::addHostAccessor(Requirement *Req,
   if (MPrintOptionsArray[BeforeAddHostAcc])
     printGraphAsDot("before_addHostAccessor");
   markModifiedIfWrite(Record, Req);
+  const bool HasAccessLogic = Req->MSYCLMemObj && Req->MSYCLMemObj->hasAccessLogic();
 
   AllocaCommandBase *HostAllocaCmd =
       getOrCreateAllocaForReq(Record, Req, nullptr, ToEnqueue);
 
   if (isOnSameContext(Record->getCurContext(), HostAllocaCmd->getQueue())) {
-    if (!isAccessModeAllowed(Req->MAccessMode, Record->MHostAccess)) {
+    if (!HasAccessLogic && !isAccessModeAllowed(Req->MAccessMode, Record->MHostAccess)) {
       remapMemoryObject(Record, Req,
                         Req->MIsSubBuffer ? (static_cast<AllocaSubBufCommand *>(
                                                  HostAllocaCmd))
@@ -720,6 +722,7 @@ AllocaCommandBase *Scheduler::GraphBuilder::getOrCreateAllocaForReq(
       // unnecessary copy on devices with unified host memory support.
       const bool HostUnifiedMemory = checkHostUnifiedMemory(Context);
       SYCLMemObjI *MemObj = Req->MSYCLMemObj;
+      const bool HasAccessLogic = MemObj->hasAccessLogic();
       const bool InitFromUserData = Record->MAllocaCommands.empty() &&
                                     (HostUnifiedMemory || MemObj->isInterop());
       AllocaCommandBase *LinkedAllocaCmd = nullptr;
@@ -748,7 +751,7 @@ AllocaCommandBase *Scheduler::GraphBuilder::getOrCreateAllocaForReq(
         // If it is not the first allocation, try to setup a link
         // FIXME: Temporary limitation, linked alloca commands for an image is
         // not supported because map operation is not implemented for an image.
-        if (Req->MSYCLMemObj->getType() == SYCLMemObjI::MemObjType::Buffer)
+        if (!HasAccessLogic && Req->MSYCLMemObj->getType() == SYCLMemObjI::MemObjType::Buffer)
           // Current limitation is to setup link between current allocation and
           // new one. There could be situations when we could setup link with
           // "not" current allocation, but it will require memory copy.

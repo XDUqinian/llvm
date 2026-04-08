@@ -20,6 +20,11 @@ namespace detail {
 class event_impl;
 class context_impl;
 struct MemObjRecord;
+struct buffer_access_logic_impl;
+struct backend_layout_plan;
+struct device_layout_mapping;
+enum class backend_kind;
+enum class backend_layout_kind;
 
 using EventImplPtr = std::shared_ptr<detail::event_impl>;
 
@@ -72,6 +77,18 @@ public:
   // Returns the context which is passed if a memory object is created using
   // interoperability constructor, nullptr otherwise.
   virtual detail::context_impl *getInteropContext() const = 0;
+
+  virtual bool hasAccessLogic() const noexcept { return false; }
+
+  virtual const buffer_access_logic_impl *getAccessLogic() const noexcept { return nullptr; }
+
+  virtual size_t getAccessLogicElemSize() const noexcept { return 1; }
+
+  virtual bool hasBackendLayoutPolicy() const noexcept { return false; }
+
+  virtual const backend_layout_plan *getOrCreateBackendLayoutPlan(backend_kind, backend_layout_kind) const { return nullptr; }
+
+  virtual const device_layout_mapping *getOrCreateDeviceLayoutMapping(context_impl *, backend_kind, backend_layout_kind) const { return nullptr; }
 
 protected:
   // Pointer to the record that contains the memory commands. This is managed

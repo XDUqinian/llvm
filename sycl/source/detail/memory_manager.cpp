@@ -16,6 +16,7 @@
 #include <detail/ur_utils.hpp>
 #include <detail/xpti_registry.hpp>
 
+#include <sycl/detail/backend_layout_plan.hpp>
 #include <sycl/detail/ur.hpp>
 #include <sycl/ext/oneapi/bindless_images_memory.hpp>
 #include <sycl/usm/usm_enums.hpp>
@@ -711,6 +712,20 @@ static void copyH2H(SYCLMemObjI *, char *SrcMem, unsigned int DimSrc,
   std::memcpy(DstMem, SrcMem, BytesToCopy);
 }
 
+static inline void waitForSingleEvent(adapter_impl &Adapter,
+                                      ur_event_handle_t Event) {
+  if (Event)
+    Adapter.call<UrApiKind::urEventWait>(1, &Event);
+}
+
+static backend_kind select_backend_kind_for_queue(const queue_impl *Q) {
+  if (!Q)
+    return backend_kind::cpu;
+  return backend_kind::cpu;
+  // auto Dev = Q->get_device();
+  // return Dev.is_gpu() ? backend_kind::gpu : backend_kind::cpu;
+}
+
 // Copies memory between: host and device, host and host,
 // device and device if memory objects bound to the one context.
 void MemoryManager::copy(SYCLMemObjI *SYCLMemObj, void *SrcMem,
@@ -723,6 +738,70 @@ void MemoryManager::copy(SYCLMemObjI *SYCLMemObj, void *SrcMem,
                          unsigned int DstElemSize,
                          std::vector<ur_event_handle_t> DepEvents,
                          ur_event_handle_t &OutEvent) {
+
+  if (SYCLMemObj && SYCLMemObj->hasBackendLayoutPolicy()) {
+    const backend_kind BK =
+        select_backend_kind_for_queue(TgtQueue ? TgtQueue : SrcQueue);
+    const backend_layout_kind LK = select_layout_kind_for_backend(BK);
+    const backend_layout_plan *Plan =
+        SYCLMemObj->getOrCreateBackendLayoutPlan(BK, LK);
+
+    if (Plan) {
+      const size_t ElemBytes = SYCLMemObj->getAccessLogicElemSize();
+      const size_t Bytes = SYCLMemObj->getSizeInBytes();
+
+      // host -> host: host 侧保持 canonical/original 数据视图
+      if (!SrcQueue && !TgtQueue) {
+        copyH2H(SYCLMemObj, (char *)SrcMem, DimSrc, SrcSize, SrcAccessRange,
+                SrcOffset, SrcElemSize, (char *)DstMem, DimDst, DstSize,
+                DstAccessRange, DstOffset, DstElemSize, std::move(DepEvents),
+                OutEvent);
+        return;
+      }
+
+      // host -> device: canonical host -> packed staging -> device
+      if (!SrcQueue && TgtQueue) {
+        std::vector<unsigned char> Packed(Bytes);
+        pack_bytes_by_plan(reinterpret_cast<const unsigned char *>(SrcMem),
+                           Packed.data(), Bytes, ElemBytes, *Plan);
+
+        copyH2D(*TgtQueue, SYCLMemObj, reinterpret_cast<char *>(Packed.data()),
+                DimSrc, SrcSize, SrcAccessRange, SrcOffset, SrcElemSize,
+                ur::cast<ur_mem_handle_t>(DstMem), DimDst, DstSize,
+                DstAccessRange, DstOffset, DstElemSize, std::move(DepEvents),
+                OutEvent);
+
+        waitForSingleEvent(TgtQueue->getAdapter(), OutEvent);
+        return;
+      }
+
+      // device -> host: device -> packed staging -> canonical host
+      if (SrcQueue && !TgtQueue) {
+        std::vector<unsigned char> Packed(Bytes);
+
+        copyD2H(*SrcQueue, SYCLMemObj, ur::cast<ur_mem_handle_t>(SrcMem), DimSrc,
+                SrcSize, SrcAccessRange, SrcOffset, SrcElemSize,
+                reinterpret_cast<char *>(Packed.data()),
+                DimDst, DstSize, DstAccessRange, DstOffset, DstElemSize,
+                std::move(DepEvents), OutEvent);
+
+        waitForSingleEvent(SrcQueue->getAdapter(), OutEvent);
+
+        unpack_bytes_by_plan(Packed.data(),
+                             reinterpret_cast<unsigned char *>(DstMem),
+                             Bytes, ElemBytes, *Plan);
+        return;
+      }
+
+      // device -> device: 第一版默认 packed -> packed 直接拷贝
+      copyD2D(*SrcQueue, SYCLMemObj, ur::cast<ur_mem_handle_t>(SrcMem), DimSrc,
+              SrcSize, SrcAccessRange, SrcOffset, SrcElemSize,
+              ur::cast<ur_mem_handle_t>(DstMem), DimDst, DstSize,
+              DstAccessRange, DstOffset, DstElemSize, std::move(DepEvents),
+              OutEvent);
+      return;
+    }
+  }
 
   if (!SrcQueue) {
     if (!TgtQueue)
