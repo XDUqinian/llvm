@@ -24,9 +24,31 @@ build_layout_plan_from_impl(const buffer_access_logic_impl &LogicImpl,
                             range<3> PhysicalRange,
                             backend_kind BK,
                             backend_layout_kind LK) {
-  (void)BK;
-  (void)LK;
-  return make_cpu_unit_first_touch_plan(LogicImpl, PhysicalRange);
+  switch (BK) {
+  case backend_kind::cpu:
+    switch (LK) {
+    case backend_layout_kind::unit_first_touch_permutation:
+      return make_cpu_unit_first_touch_plan(LogicImpl, PhysicalRange);
+    case backend_layout_kind::blocked_first_touch_permutation:
+      return make_cpu_blocked_first_touch_plan(LogicImpl, PhysicalRange);
+    case backend_layout_kind::frequency_aware_permutation:
+      return make_cpu_frequency_aware_plan(LogicImpl, PhysicalRange);
+    default:
+      throw std::runtime_error("unsupported cpu layout kind");
+    }
+
+  case backend_kind::gpu:
+    switch (LK) {
+    case backend_layout_kind::same_offset_permutation:
+      return make_gpu_same_offset_plan(LogicImpl, PhysicalRange);
+    case backend_layout_kind::warp_same_offset_permutation:
+      return make_gpu_warp_same_offset_plan(LogicImpl, PhysicalRange);
+    default:
+      throw std::runtime_error("unsupported gpu layout kind");
+    }
+  }
+
+  throw std::runtime_error("unknown backend kind");
 }
 
 const backend_layout_plan *
@@ -95,7 +117,10 @@ buffer_impl::getOrCreateDeviceLayoutMapping(context_impl *Ctx,
     Mapping->Desc.CanonicalToPacked = Mapping->DeviceCanonicalToPacked;
   } else {
     // GPU 先占位：后续在这里把表上传到 device/USM allocation
-    Mapping->Desc.Enabled = false;
+    // Mapping->Desc.Enabled = false;
+    Mapping->DeviceCanonicalToPacked =
+        Mapping->HostCanonicalToPacked->data();
+    Mapping->Desc.CanonicalToPacked = Mapping->DeviceCanonicalToPacked;
   }
 
   std::lock_guard<std::mutex> Lock(MLayoutCacheMutex);

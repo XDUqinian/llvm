@@ -61,6 +61,12 @@ device getDeviceFromHandler(handler &CGH) {
   return createSyclObjFromImpl<device>(getSyclObjImpl(CGH)->get_device());
 }
 
+backend_kind getBackendKindFromHandler(handler &CGH) {
+  auto Dev = getDeviceFromHandler(CGH);
+  return Dev.is_gpu() ? detail::backend_kind::gpu
+                      : detail::backend_kind::cpu;
+}
+
 bool isDeviceGlobalUsedInKernel(const void *DeviceGlobalPtr) {
   DeviceGlobalMapEntry *DGEntry =
       detail::ProgramManager::getInstance().getDeviceGlobalEntry(

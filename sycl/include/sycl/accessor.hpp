@@ -293,6 +293,7 @@ sycl::range<1> GetZeroDimAccessRange(BufferT Buffer) {
 }
 
 __SYCL_EXPORT device getDeviceFromHandler(handler &CommandGroupHandlerRef);
+__SYCL_EXPORT backend_kind getBackendKindFromHandler(handler &CommandGroupHandlerRef);
 
 template <typename DataT, int Dimensions, access::mode AccessMode,
           access::target AccessTarget, access::placeholder IsPlaceholder,
@@ -1038,14 +1039,22 @@ public:
   }
 
   template <typename BufferT>
-  void init_layout_from_buffer(BufferT &BufferRef) {
+  void init_layout_from_buffer(BufferT &BufferRef, handler *CGH = nullptr) {
     if (!BufferRef.has_access_logic())
       return;
     auto Impl = detail::getSyclObjImpl(BufferRef);
     auto &AccData = getAccData();
+
+    if (!CGH) {
+      AccData.MLayout = detail::backend_layout_desc{};
+      return;
+    }
+
+    const detail::backend_kind BK = detail::getBackendKindFromHandler(*CGH);
+    const detail::backend_layout_kind LK = detail::select_layout_kind_for_backend(BK);
+
     auto *Mapping = detail::get_or_create_device_layout_mapping_for_accessor(
-      Impl, nullptr, detail::backend_kind::cpu,
-      detail::backend_layout_kind::unit_first_touch_permutation);
+      Impl, nullptr, BK, LK);
     if (Mapping)
       AccData.MLayout = Mapping->Desc;
   }
@@ -1298,7 +1307,7 @@ public:
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1338,7 +1347,7 @@ public:
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1475,7 +1484,7 @@ public:
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
                                     AccessTarget, AccessMode, CodeLoc);
@@ -1512,7 +1521,7 @@ public:
     preScreenAccessor(PropertyList);
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
@@ -1800,7 +1809,7 @@ public:
 
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),
@@ -1845,7 +1854,7 @@ public:
 
     initHostAcc();
     init_logic_from_buffer(BufferRef);
-    init_layout_from_buffer(BufferRef);
+    init_layout_from_buffer(BufferRef, &CommandGroupHandler);
     detail::associateWithHandler(CommandGroupHandler, this, AccessTarget);
     detail::constructorNotification(detail::getSyclObjImpl(BufferRef).get(),
                                     detail::AccessorBaseHost::impl.get(),

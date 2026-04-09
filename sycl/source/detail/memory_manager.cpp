@@ -719,11 +719,11 @@ static inline void waitForSingleEvent(adapter_impl &Adapter,
 }
 
 static backend_kind select_backend_kind_for_queue(const queue_impl *Q) {
-  if (!Q)
-    return backend_kind::cpu;
-  return backend_kind::cpu;
-  // auto Dev = Q->get_device();
-  // return Dev.is_gpu() ? backend_kind::gpu : backend_kind::cpu;
+  // if (!Q)
+  //   return backend_kind::cpu;
+  // return backend_kind::cpu;
+  auto Dev = Q->get_device();
+  return Dev.is_gpu() ? backend_kind::gpu : backend_kind::cpu;
 }
 
 // Copies memory between: host and device, host and host,

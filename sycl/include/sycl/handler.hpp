@@ -10,6 +10,7 @@
 
 #include <sycl/access/access.hpp>
 #include <sycl/accessor.hpp>
+#include <sycl/detail/backend_layout_plan.hpp>
 #include <sycl/detail/cl.h>
 #include <sycl/detail/common.hpp>
 #include <sycl/detail/defines_elementary.hpp>
@@ -248,6 +249,8 @@ template <typename Type> struct get_kernel_wrapper_name_t {
 };
 
 __SYCL_EXPORT device getDeviceFromHandler(handler &);
+
+__SYCL_EXPORT backend_kind getBackendKindFromHandler(handler &);
 
 // Checks if a device_global has any registered kernel usage.
 __SYCL_EXPORT bool isDeviceGlobalUsedInKernel(const void *DeviceGlobalPtr);
@@ -2639,6 +2642,7 @@ private:
             typename PropertyListT>
   friend class accessor;
   friend device detail::getDeviceFromHandler(handler &);
+  friend detail::backend_kind detail::getBackendKindFromHandler(handler &);
 
   template <typename DataT, int Dimensions, access::mode AccessMode,
             access::target AccessTarget, access::placeholder IsPlaceholder>
